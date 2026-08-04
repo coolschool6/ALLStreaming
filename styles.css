@@ -175,6 +175,12 @@ body {
   display: block;
 }
 
+.status-msg.error {
+  background: rgba(229, 9, 20, 0.15);
+  border: 1px solid rgba(229, 9, 20, 0.4);
+  color: #ff6b6b;
+}
+
 .countdown-timer {
   display: none;
   background: rgba(229, 9, 20, 0.1);
@@ -313,10 +319,56 @@ body {
   display: none;
   min-height: 100vh;
   background: #141414;
+}#dashboard-view.active {
+  display: block;
 }
 
-#dashboard-view.active {
-  display: block;
+#stream-view {
+  display: none;
+  flex-direction: column;
+  background: #000;
+  height: 100vh;
+  width: 100vw;
+}
+
+#stream-view.active {
+  display: flex;
+}
+
+.stream-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  background: #141414;
+  border-bottom: 1px solid #2a2a2a;
+  flex-shrink: 0;
+}
+
+.stream-brand {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+
+.stream-countdown {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e50914;
+  font-variant-numeric: tabular-nums;
+}
+
+.stream-exit {
+  width: auto;
+  margin: 0;
+}
+
+.stream-frame {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  background: #000;
 }
 
 #login-view.active {

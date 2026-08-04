@@ -55,6 +55,21 @@
     </div>
   </div>
 
+  <div id="stream-view" class="view">
+    <div class="stream-bar">
+      <span class="stream-brand">ALLStreaming</span>
+      <span id="stream-countdown" class="stream-countdown"></span>
+      <button id="btn-stream-exit" class="btn-text stream-exit" type="button">Use a different key</button>
+    </div>
+    <iframe
+      id="stream-frame"
+      class="stream-frame"
+      title="ALLStreaming"
+      allow="fullscreen; autoplay; encrypted-media; picture-in-picture"
+      allowfullscreen
+    ></iframe>
+  </div>
+
   <script src="app.js"></script>
   <a href="admin.html" class="admin-link">Admin</a>
 </body>

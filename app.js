@@ -2,22 +2,27 @@
   'use strict';
 
   var SESSION_KEY = 'ak_session';
-  var TARGET_URL = 'https://dulo.cx/';
-  var API_URL = '/api/validate';
-  var REDIRECT_DELAY = 3000;
+  var REDIRECT_KEY = 'ak_redirect';
+  var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyRQiSEI4-JGds65tngAD3adPKO10ng2BbXLydBbn5Y42JWSugBveJLSyZPhqF-rn6sEQ/exec';
 
   var gateView = document.getElementById('gate-view');
   var expiredView = document.getElementById('expired-view');
+  var streamView = document.getElementById('stream-view');
+  var streamFrame = document.getElementById('stream-frame');
+  var streamCountdown = document.getElementById('stream-countdown');
   var keyInput = document.getElementById('key-input');
   var errorMsg = document.getElementById('error-msg');
   var statusMsg = document.getElementById('status-msg');
   var countdownEl = document.getElementById('countdown-timer');
 
   var countdownInterval = null;
+  var autoRedirectTimer = null;
+  var autoRedirectListener = null;
 
   function showView(view) {
     gateView.classList.remove('active');
     expiredView.classList.remove('active');
+    streamView.classList.remove('active');
     view.classList.add('active');
   }
 
@@ -52,11 +57,13 @@
   function showCountdown(text) {
     countdownEl.textContent = text;
     countdownEl.classList.add('visible');
+    streamCountdown.textContent = text;
   }
 
   function hideCountdown() {
     countdownEl.textContent = '';
     countdownEl.classList.remove('visible');
+    streamCountdown.textContent = '';
   }
 
   function setLoading(btn, loading) {
@@ -90,19 +97,37 @@
     }
   }
 
-  async function apiCall(body) {
-    var res = await fetch(API_URL, {
+  function decodeRedirect(b64) {
+    try {
+      return atob(b64);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function apiCall(action, payload) {
+    var body = Object.assign({ action: action }, payload || {});
+    var res = await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify(body)
     });
-    var data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'API error');
+    var data;
+    try {
+      data = await res.json();
+    } catch (e) {
+      throw new Error('Bad response from server');
+    }
+    if (!data || data.ok === false) throw new Error((data && data.error) || 'API error');
     return data;
   }
 
   function saveSession(token) {
     localStorage.setItem(SESSION_KEY, token);
+  }
+
+  function saveRedirect(b64) {
+    try { localStorage.setItem(REDIRECT_KEY, b64); } catch (e) {}
   }
 
   function getSession() {
@@ -113,8 +138,17 @@
     }
   }
 
+  function getRedirect() {
+    try {
+      return localStorage.getItem(REDIRECT_KEY) || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   function clearSession() {
     localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(REDIRECT_KEY);
   }
 
   function startCountdown(expiresAt, onExpired) {
@@ -144,15 +178,58 @@
     hideCountdown();
   }
 
-  function beginRedirect(expiresAt) {
+  function armAutoRedirect(url) {
+    if (autoRedirectTimer) return;
+    var fired = false;
+    function go() {
+      if (fired) return;
+      fired = true;
+      stopAutoRedirect();
+      var w = window.open(url, '_blank');
+      if (!w) {
+        window.location.href = url;
+      } else {
+        try { w.opener = null; } catch (e) {}
+      }
+    }
+    autoRedirectListener = go;
+    streamFrame.addEventListener('focus', go);
+    autoRedirectTimer = setInterval(function () {
+      if (document.activeElement === streamFrame) go();
+    }, 300);
+  }
+
+  function stopAutoRedirect() {
+    if (autoRedirectTimer) {
+      clearInterval(autoRedirectTimer);
+      autoRedirectTimer = null;
+    }
+    if (autoRedirectListener) {
+      streamFrame.removeEventListener('focus', autoRedirectListener);
+      autoRedirectListener = null;
+    }
+  }
+
+  function openStream(expiresAt, redirectB64) {
+    var url = decodeRedirect(redirectB64);
+    if (!url) {
+      showErrorMessage('The platform URL is not configured yet. Contact the administrator.');
+      return false;
+    }
     stopCountdown();
-    startCountdown(expiresAt, function () {
-      showView(expiredView);
-    });
-    showStatus('Key verified. Redirecting to platform...');
-    setTimeout(function () {
-      window.location.href = TARGET_URL;
-    }, REDIRECT_DELAY);
+    stopAutoRedirect();
+    streamFrame.src = url;
+    showView(streamView);
+    armAutoRedirect(url);
+    if (expiresAt) {
+      startCountdown(expiresAt, function () {
+        stopAutoRedirect();
+        streamFrame.src = 'about:blank';
+        clearSession();
+        showView(expiredView);
+      });
+    }
+    return true;
   }
 
   async function attemptLogin(inputKey) {
@@ -163,88 +240,32 @@
     stopCountdown();
 
     try {
-      var result;
-      try {
-        result = await apiCall({ action: 'validate-key', key: inputKey });
-      } catch (apiError) {
-        result = await validateLocally(inputKey);
-      }
+      var result = await apiCall('validate-key', { key: inputKey });
 
       if (result.valid && result.token) {
         saveSession(result.token);
+        if (result.redirectB64) saveRedirect(result.redirectB64);
         var data = decodeToken(result.token);
-        if (data && data.e) {
-          beginRedirect(data.e);
-        } else {
-          window.location.href = TARGET_URL;
-        }
+        openStream(data && data.e, result.redirectB64 || getRedirect());
       } else {
-        if (result.error === 'expired') {
-          showErrorMessage('This key has already started and its time period has ended.');
-        } else if (result.error === 'Invalid key') {
-          showErrorMessage('That key does not match exactly. Check spelling, case, and spaces.');
-        } else if (result.error === 'Invalid key configuration') {
-          showErrorMessage('This key is misconfigured in keys.json.');
-        } else {
-          showError();
-        }
+        showError();
       }
     } catch (e) {
-      showErrorMessage('Validation failed. Check the key exactly or make sure keys.json is reachable.');
+      var msg = e.message || '';
+      if (msg === 'expired') {
+        showErrorMessage('This key has already started and its time period has ended.');
+      } else if (msg === 'revoked') {
+        showErrorMessage('This key has been revoked by the administrator.');
+      } else if (msg === 'Invalid key') {
+        showErrorMessage('That key does not match exactly. Check spelling, case, and spaces.');
+      } else if (msg === 'Invalid key configuration') {
+        showErrorMessage('This key is misconfigured in the spreadsheet.');
+      } else {
+        showErrorMessage('Validation failed. Please try again or contact the administrator.');
+      }
     } finally {
       setLoading(btn, false);
     }
-  }
-
-  function getKeyDurationMs(keyObj) {
-    var days = Number(keyObj.validDays) || 0;
-    var mins = Number(keyObj.validMinutes) || 0;
-    return days * 86400000 + mins * 60000;
-  }
-
-  async function validateLocally(inputKey) {
-    try {
-      var res = await fetch('keys.json', { cache: 'no-store' });
-      var keys = await res.json();
-    } catch (e) {
-      return { valid: false, error: 'Cannot load keys' };
-    }
-
-    var keyObj = null;
-    var normalised = inputKey.trim().toUpperCase();
-    for (var i = 0; i < keys.length; i++) {
-      if (keys[i].key.toUpperCase() === normalised) {
-        keyObj = keys[i];
-        break;
-      }
-    }
-
-    if (!keyObj) {
-      return { valid: false, error: 'Invalid key' };
-    }
-
-    var durationMs = getKeyDurationMs(keyObj);
-    if (durationMs <= 0) {
-      return { valid: false, error: 'Invalid key configuration' };
-    }
-
-    var activatedAt = new Date().toISOString();
-    var expiryMs = new Date(activatedAt).getTime() + durationMs;
-    var remainingMs = expiryMs - Date.now();
-    if (remainingMs <= 0) {
-      return { valid: false, error: 'expired' };
-    }
-
-    var payload = JSON.stringify({ k: keyObj.key, a: activatedAt, e: expiryMs });
-    var token = btoa(payload) + '.local';
-
-    return {
-      valid: true,
-      token: token,
-      remainingMs: remainingMs,
-      activatedAt: activatedAt,
-      expiresAt: new Date(expiryMs).toISOString()
-    };
   }
 
   async function checkExistingSession() {
@@ -255,31 +276,31 @@
     }
 
     var data = decodeToken(token);
+    var cachedRedirect = getRedirect();
 
-    if (data && data.e && data.e > Date.now()) {
-      beginRedirect(data.e);
-      return;
+    if (data && data.e) {
+      if (data.e <= Date.now()) {
+        clearSession();
+        showView(expiredView);
+        stopCountdown();
+        return;
+      }
+      if (cachedRedirect) {
+        openStream(data.e, cachedRedirect);
+        return;
+      }
     }
 
-    if (data && data.e && data.e <= Date.now()) {
-      clearSession();
-      showView(expiredView);
-      stopCountdown();
-      return;
-    }
-
+    // No usable cached redirect: ask the server (also re-checks revocation).
     try {
-      var result = await apiCall({ action: 'verify-token', token: token });
+      var result = await apiCall('verify-token', { token: token });
       if (result.valid) {
-        if (data && data.e) {
-          beginRedirect(data.e);
-        } else {
-          window.location.href = TARGET_URL;
-        }
+        if (result.redirectB64) saveRedirect(result.redirectB64);
+        openStream(data && data.e, result.redirectB64 || cachedRedirect);
         return;
       }
     } catch (e) {
-      // token invalid
+      // token invalid or API unreachable
     }
 
     clearSession();
@@ -298,6 +319,7 @@
   });
 
   document.getElementById('btn-retry').addEventListener('click', function () {
+    stopAutoRedirect();
     keyInput.value = '';
     hideError();
     hideStatus();
@@ -307,9 +329,20 @@
   });
 
   document.getElementById('btn-clear-session').addEventListener('click', function () {
+    stopAutoRedirect();
     clearSession();
     keyInput.value = '';
     hideError();
+    hideStatus();
+    stopCountdown();
+    showView(gateView);
+    keyInput.focus();
+  });
+
+  document.getElementById('btn-stream-exit').addEventListener('click', function () {
+    stopAutoRedirect();
+    streamFrame.src = 'about:blank';
+    clearSession();
     hideStatus();
     stopCountdown();
     showView(gateView);

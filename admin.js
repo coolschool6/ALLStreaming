@@ -2,7 +2,7 @@
   'use strict';
 
   var ADMIN_TOKEN_KEY = 'ak_admin_token';
-  var API_URL = '/api/admin';
+  var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyRQiSEI4-JGds65tngAD3adPKO10ng2BbXLydBbn5Y42JWSugBveJLSyZPhqF-rn6sEQ/exec';
 
   var loginView = document.getElementById('login-view');
   var dashboardView = document.getElementById('dashboard-view');
@@ -21,22 +21,23 @@
 
   function showError(el, text) {
     el.textContent = text;
-    el.classList.add('visible');
+    el.classList.add('visible', 'error');
   }
 
   function hideError(el) {
     el.textContent = '';
-    el.classList.remove('visible');
+    el.classList.remove('visible', 'error');
   }
 
   function showStatus(el, text) {
     el.textContent = text;
+    el.classList.remove('error');
     el.classList.add('visible');
   }
 
   function hideStatus(el) {
     el.textContent = '';
-    el.classList.remove('visible');
+    el.classList.remove('visible', 'error');
   }
 
   function getAdminToken() {
@@ -51,18 +52,23 @@
     localStorage.removeItem(ADMIN_TOKEN_KEY);
   }
 
-  async function apiCall(body) {
-    var headers = { 'Content-Type': 'application/json' };
+  async function apiCall(action, payload) {
+    var body = Object.assign({ action: action }, payload || {});
     var token = getAdminToken();
-    if (token) headers['X-Admin-Token'] = token;
+    if (token) body.token = token;
 
-    var res = await fetch(API_URL, {
+    var res = await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
-      headers: headers,
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify(body)
     });
-    var data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'API error');
+    var data;
+    try {
+      data = await res.json();
+    } catch (e) {
+      throw new Error('Bad response from server');
+    }
+    if (!data || data.ok === false) throw new Error((data && data.error) || 'API error');
     return data;
   }
 
@@ -161,16 +167,10 @@
     keysTableWrap.style.display = 'none';
     keysEmpty.style.display = 'none';
     try {
-      var result = await apiCall({ action: 'admin-list' });
+      var result = await apiCall('admin-list');
       renderKeys(result.keys || []);
     } catch (e) {
-      try {
-        var res = await fetch('keys.json', { cache: 'no-store' });
-        var keys = await res.json();
-        renderKeys(Array.isArray(keys) ? keys : []);
-      } catch (e2) {
-        keysLoading.textContent = 'Failed to load keys: ' + e.message;
-      }
+      keysLoading.textContent = 'Failed to load keys: ' + e.message;
     }
   }
 
@@ -180,15 +180,19 @@
     var pw = document.getElementById('admin-password').value;
     if (!pw) return;
 
+    var btn = loginForm.querySelector('button');
+    btn.disabled = true;
     try {
-      var result = await apiCall({ action: 'admin-login', password: pw });
+      var result = await apiCall('admin-login', { password: pw });
       saveAdminToken(result.token);
       showView(dashboardView);
       loadKeys();
-    } catch (e) {
+    } catch (err) {
       showError(loginError, 'Wrong password.');
       document.getElementById('admin-password').value = '';
       document.getElementById('admin-password').focus();
+    } finally {
+      btn.disabled = false;
     }
   });
 
@@ -196,26 +200,27 @@
     e.preventDefault();
     var msg = document.getElementById('add-key-msg');
     hideStatus(msg);
-    hideError(loginError);
 
     var name = document.getElementById('new-key-name').value.trim();
-    var days = parseInt(document.getElementById('new-key-days').value, 10);
+    var days = parseInt(document.getElementById('new-key-days').value, 10) || 0;
+    var minutes = parseInt(document.getElementById('new-key-minutes').value, 10) || 0;
     var note = document.getElementById('new-key-note').value.trim();
 
-    if (!name || !days || days <= 0) {
-      showError(loginError, 'Enter a key name and valid days.');
+    if (!name || (days <= 0 && minutes <= 0)) {
+      showError(msg, 'Enter a key name and a valid duration.');
       return;
     }
 
     try {
-      await apiCall({ action: 'admin-add', key: name, validDays: days, userNote: note });
+      await apiCall('admin-add', { key: name, validDays: days, validMinutes: minutes, userNote: note });
       showStatus(msg, 'Key "' + name + '" added.');
       document.getElementById('new-key-name').value = '';
       document.getElementById('new-key-days').value = '';
+      document.getElementById('new-key-minutes').value = '';
       document.getElementById('new-key-note').value = '';
       setTimeout(loadKeys, 1500);
-    } catch (e) {
-      showError(loginError, 'Failed: ' + e.message);
+    } catch (err) {
+      showError(msg, 'Failed: ' + err.message);
     }
   });
 
@@ -223,24 +228,23 @@
     e.preventDefault();
     var msg = document.getElementById('extend-key-msg');
     hideStatus(msg);
-    hideError(loginError);
 
     var name = document.getElementById('extend-key-name').value.trim();
     var days = parseInt(document.getElementById('extend-key-days').value, 10);
 
     if (!name || !days || days <= 0) {
-      showError(loginError, 'Enter a key name and days to add.');
+      showError(msg, 'Enter a key name and days to add.');
       return;
     }
 
     try {
-      await apiCall({ action: 'admin-extend', key: name, addDays: days });
+      await apiCall('admin-extend', { key: name, addDays: days });
       showStatus(msg, 'Extended "' + name + '" by ' + days + ' days.');
       document.getElementById('extend-key-name').value = '';
       document.getElementById('extend-key-days').value = '';
       setTimeout(loadKeys, 1500);
-    } catch (e) {
-      showError(loginError, 'Failed: ' + e.message);
+    } catch (err) {
+      showError(msg, 'Failed: ' + err.message);
     }
   });
 
@@ -248,16 +252,15 @@
     e.preventDefault();
     var msg = document.getElementById('check-key-msg');
     hideStatus(msg);
-    hideError(loginError);
 
     var name = document.getElementById('check-key-name').value.trim();
     if (!name) {
-      showError(loginError, 'Enter a key name to check.');
+      showError(msg, 'Enter a key name to check.');
       return;
     }
 
     try {
-      var result = await apiCall({ action: 'admin-check-key', key: name });
+      var result = await apiCall('admin-check-key', { key: name });
       if (result.valid) {
         var actDate = result.activatedAt ? new Date(result.activatedAt).toLocaleString() : 'Not yet';
         var expDate = result.expiresAt ? new Date(result.expiresAt).toLocaleString() : '-';
@@ -268,11 +271,11 @@
           'Days remaining: ' + result.remaining
         );
       } else {
-        showStatus(msg, 'Key: ' + name + ' — ' + (result.error || 'INVALID'));
+        showError(msg, 'Key: ' + name + ' — ' + (result.error || 'INVALID'));
       }
       document.getElementById('check-key-name').value = '';
-    } catch (e) {
-      showError(loginError, 'Failed: ' + e.message);
+    } catch (err) {
+      showError(msg, 'Failed: ' + err.message);
     }
   });
 
@@ -291,10 +294,10 @@
     btn.textContent = '...';
 
     try {
-      await apiCall({ action: 'admin-' + action, key: keyName });
+      await apiCall('admin-' + action, { key: keyName });
       setTimeout(loadKeys, 1000);
-    } catch (e) {
-      alert('Failed: ' + e.message);
+    } catch (err) {
+      alert('Failed: ' + err.message);
       btn.disabled = false;
       btn.textContent = action === 'disable' ? 'Disable' : action === 'enable' ? 'Enable' : 'Delete';
     }
@@ -312,7 +315,7 @@
     var token = getAdminToken();
     if (token) {
       try {
-        var result = await apiCall({ action: 'admin-check' });
+        var result = await apiCall('admin-check');
         if (result.valid) {
           showView(dashboardView);
           loadKeys();
